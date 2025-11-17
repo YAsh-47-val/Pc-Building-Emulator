@@ -1,0 +1,19 @@
+﻿  main.cpp
+C:\Local Disk Y\University\Project\emu\main.cpp(328,32): warning C4838: conversion from 'unsigned int' to 'int' requires a narrowing conversion
+C:\Local Disk Y\University\Project\emu\main.cpp(329,32): warning C4838: conversion from 'unsigned int' to 'int' requires a narrowing conversion
+C:\Local Disk Y\University\Project\emu\main.cpp(597,32): warning C4838: conversion from 'unsigned int' to 'int' requires a narrowing conversion
+C:\Local Disk Y\University\Project\emu\main.cpp(598,32): warning C4838: conversion from 'unsigned int' to 'int' requires a narrowing conversion
+C:\Local Disk Y\University\Project\emu\main.cpp(784,55): warning C4244: 'argument': conversion from 'int' to 'float', possible loss of data
+C:\Local Disk Y\University\Project\emu\main.cpp(785,44): warning C4244: 'argument': conversion from 'int' to 'float', possible loss of data
+C:\Local Disk Y\University\Project\emu\main.cpp(798,22): warning C4267: 'initializing': conversion from 'size_t' to 'int', possible loss of data
+C:\Local Disk Y\University\Project\emu\main.cpp(800,43): warning C4244: 'argument': conversion from 'int' to 'float', possible loss of data
+C:\Local Disk Y\University\Project\emu\main.cpp(800,37): warning C4244: 'argument': conversion from 'int' to 'float', possible loss of data
+C:\Local Disk Y\University\Project\emu\main.cpp(836,40): warning C4244: '=': conversion from 'double' to 'float', possible loss of data
+C:\Local Disk Y\University\Project\emu\main.cpp(841,40): warning C4244: '=': conversion from 'double' to 'float', possible loss of data
+C:\Local Disk Y\University\Project\emu\main.cpp(846,40): warning C4244: '=': conversion from 'double' to 'float', possible loss of data
+C:\Local Disk Y\University\Project\emu\main.cpp(851,40): warning C4244: '=': conversion from 'double' to 'float', possible loss of data
+C:\Local Disk Y\University\Project\emu\main.cpp(865,33): warning C4244: 'initializing': conversion from 'double' to 'float', possible loss of data
+C:\Local Disk Y\University\Project\emu\main.cpp(866,33): warning C4244: 'initializing': conversion from 'double' to 'float', possible loss of data
+C:\Local Disk Y\University\Project\emu\main.cpp(797,28): warning C4101: 'textHeight': unreferenced local variable
+C:\Local Disk Y\University\Project\emu\main.cpp(797,17): warning C4101: 'textWidth': unreferenced local variable
+  emu.vcxproj -> C:\Local Disk Y\University\Project\emu\x64\Debug\emu.exe

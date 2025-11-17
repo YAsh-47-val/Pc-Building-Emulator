@@ -1,0 +1,915 @@
+#define _CRT_SECURE_NO_WARNINGS
+#include <glad/glad.h>
+#include <GLFW/glfw3.h>
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+#include <iostream>
+#include <cstring>
+#include <cstdio>
+#include <algorithm>
+#include <map>
+#include <ft2build.h>
+#include FT_FREETYPE_H
+
+using namespace std;
+
+const int WIN_WIDTH_REQUEST = 1280;
+const int WIN_HEIGHT_REQUEST = 720;
+const int MAX_COMPONENTS = 10;
+
+const int CHALLENGE_DURATION_SEC = 20;
+
+// Shaders ar onsho
+const char* vertexShaderSrc = R"(
+#version 330 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec2 aTexCoord;
+out vec2 TexCoord;
+void main()
+{ 
+gl_Position = vec4(aPos,1.0); TexCoord=aTexCoord;
+ }
+)";
+
+const char* fragmentShaderSrc = R"(
+#version 330 core
+in vec2 TexCoord; out vec4 FragColor;
+uniform sampler2D texture1;
+void main()
+{
+    vec4 texColor = texture(texture1, TexCoord);
+    if (texColor.a < 0.1) discard;
+    FragColor = texColor;
+}
+)";
+
+const char* redVertexShaderSrc = R"(
+#version 330 core
+layout(location = 0) in vec2 aPos;
+void main()
+{
+ gl_Position = vec4(aPos,0.0,1.0); 
+}
+)";
+
+const char* redFragmentShaderSrc = R"(
+#version 330 core
+out vec4 FragColor;
+void main()
+{ 
+FragColor = vec4(1.0,0.0,0.0,1.0);
+}
+)";
+
+const char* solidVertexShaderSrc = R"(
+#version 330 core
+layout(location = 0) in vec2 aPos;
+void main()
+{
+ gl_Position = vec4(aPos,0.0,1.0); 
+}
+)";
+
+const char* solidFragmentShaderSrc = R"(
+#version 330 core
+out vec4 FragColor; uniform vec4 uColor;
+void main()
+{
+ FragColor = uColor; 
+}
+)";
+
+const char* textVertexShaderSrc = R"(
+#version 330 core
+layout(location = 0) in vec4 vertex; // <vec2 pos, vec2 tex>
+out vec2 TexCoords;
+uniform mat4 projection;
+void main()
+{
+    gl_Position = projection * vec4(vertex.xy, 0.0, 1.0);
+    TexCoords = vertex.zw;
+}
+)";
+
+const char* textFragmentShaderSrc = R"(
+#version 330 core
+in vec2 TexCoords;
+out vec4 color;
+uniform sampler2D text;
+uniform vec3 textColor;
+void main()
+{    
+    vec4 sampled = vec4(1.0, 1.0, 1.0, texture(text, TexCoords).r);
+    color = vec4(textColor, 1.0) * sampled;
+}
+)";
+
+class TextureInfo
+{
+public:
+    unsigned int textureID;
+    int width{}, height{};
+};
+class Socket
+{
+public:
+    float x, y, width, height;
+    char componentType[10];
+    bool occupied;
+};
+
+class Component
+{
+public:
+    float x, y, width, height;
+    unsigned int texture;
+    bool dragging, connected;
+    bool visible; 
+    char name[16];
+
+    Component() : x(0), y(0), width(0), height(0), texture(0),
+        dragging(false), connected(false), visible(true) 
+    {
+        name[0] = '\0';
+    }
+
+    Component(float X, float Y, float W, float H, unsigned int T, const char* n)
+        : x(X), y(Y), width(W), height(H), texture(T),
+        dragging(false), connected(false), visible(true) 
+    {
+        strncpy(name, n, sizeof(name) - 1);
+        name[sizeof(name) - 1] = '\0';
+    }
+    bool isMouseOver(float mx, float my) const
+    {
+        return mx >= x - width / 2 && mx <= x + width / 2 && my >= y - height / 2 && my <= y + height / 2;
+    }
+    void draw(unsigned int prog) const
+    {
+        if (!visible) return; 
+
+        float v[] = {
+            x - width / 2, y + height / 2, 0, 0, 1,
+            x - width / 2, y - height / 2, 0, 0, 0,
+            x + width / 2, y - height / 2, 0, 1, 0,
+            x + width / 2, y + height / 2, 0, 1, 1 };
+        unsigned int idx[] = { 0, 1, 2, 0, 2, 3 }, VBO, VAO, EBO;
+        glGenVertexArrays(1, &VAO);
+        glGenBuffers(1, &VBO);
+        glGenBuffers(1, &EBO);
+        glBindVertexArray(VAO);
+        glBindBuffer(GL_ARRAY_BUFFER, VBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(v), v, GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(idx), idx, GL_STATIC_DRAW);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+        glEnableVertexAttribArray(1);
+        glUseProgram(prog);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glBindVertexArray(VAO);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+        glDeleteBuffers(1, &VBO);
+        glDeleteBuffers(1, &EBO);
+        glDeleteVertexArrays(1, &VAO);
+    }
+};
+
+unsigned int loadShader(const char* vs, const char* fs)
+{
+    unsigned int v = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(v, 1, &vs, nullptr);
+    glCompileShader(v);
+    unsigned int f = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(f, 1, &fs, nullptr);
+    glCompileShader(f);
+    unsigned int p = glCreateProgram();
+    glAttachShader(p, v);
+    glAttachShader(p, f);
+    glLinkProgram(p);
+    glDeleteShader(v);
+    glDeleteShader(f);
+    return p;
+}
+
+TextureInfo loadTextureWithSize(const char* file)
+{
+    TextureInfo info{};
+    glGenTextures(1, &info.textureID);
+    glBindTexture(GL_TEXTURE_2D, info.textureID);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    int chans;
+    stbi_set_flip_vertically_on_load(true);
+    unsigned char* data = stbi_load(file, &info.width, &info.height, &chans, 4);
+    if (data)
+    {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, info.width, info.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+        glGenerateMipmap(GL_TEXTURE_2D);
+    }
+    else
+    {
+        cout << "Failed to load texture: " << file << endl;
+    }
+    stbi_image_free(data);
+    return info;
+}
+
+void drawRedRectangleOutline(float x, float y, float w, float h, unsigned int prog)
+{
+    float v[] = { x - w / 2, y + h / 2, x - w / 2, y - h / 2, x + w / 2, y - h / 2, x + w / 2, y + h / 2 };
+    unsigned int VAO, VBO;
+    glGenVertexArrays(1, &VAO);
+    glGenBuffers(1, &VBO);
+    glBindVertexArray(VAO);
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(v), v, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glUseProgram(prog);
+    glBindVertexArray(VAO);
+    glDrawArrays(GL_LINE_LOOP, 0, 4);
+    glDeleteBuffers(1, &VBO);
+    glDeleteVertexArrays(1, &VAO);
+}
+
+void drawSolidRect(float x, float y, float w, float h, unsigned int prog, float r, float g, float b, float a)
+{
+    float v[] = { x - w / 2, y + h / 2, x - w / 2, y - h / 2, x + w / 2, y - h / 2, x + w / 2, y + h / 2 };
+    unsigned int VAO, VBO;
+    glGenVertexArrays(1, &VAO);
+    glGenBuffers(1, &VBO);
+    glBindVertexArray(VAO);
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(v), v, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glUseProgram(prog);
+    glUniform4f(glGetUniformLocation(prog, "uColor"), r, g, b, a);
+    glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
+    glDeleteBuffers(1, &VBO);
+    glDeleteVertexArrays(1, &VAO);
+}
+
+// FreeType text rendering
+FT_Library ft;
+FT_Face face;
+
+
+class Character 
+{
+public:
+    unsigned int TextureID; 
+    int SizeX, SizeY;      
+    int BearingX, BearingY; 
+    unsigned int Advance;   
+};
+
+map<GLchar, Character> Characters;
+unsigned int textShaderProgram = 0;
+
+
+void initFreeType(const char* fontPath) 
+{
+    if (FT_Init_FreeType(&ft)) 
+    {
+        cout << "Could not init FreeType Library" << endl;
+        exit(1);
+    }
+    if (FT_New_Face(ft, fontPath, 0, &face)) 
+    {
+        cout << "Could not open font" << endl;
+        exit(1);
+    }
+    FT_Set_Pixel_Sizes(face, 0, 20);
+
+ 
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+    for (unsigned char c = 0; c < 128; c++) 
+    {
+         
+        if (FT_Load_Char(face, c, FT_LOAD_RENDER)) 
+        {
+            cout << "ERROR::FREETYPE: Failed to load Glyph" << endl;
+            continue;
+        }
+
+   
+        unsigned int texture;
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexImage2D(
+            GL_TEXTURE_2D,
+            0,
+            GL_RED,
+            face->glyph->bitmap.width,
+            face->glyph->bitmap.rows,
+            0,
+            GL_RED,
+            GL_UNSIGNED_BYTE,
+
+            face->glyph->bitmap.buffer
+        );
+
+       
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+       
+        Character character = 
+        {
+            texture,
+            face->glyph->bitmap.width,
+            face->glyph->bitmap.rows,
+            face->glyph->bitmap_left,
+            face->glyph->bitmap_top,
+            static_cast<unsigned int>(face->glyph->advance.x)
+        };
+        Characters.insert(pair<char, Character>(c, character));
+    }
+
+    FT_Done_Face(face);
+    FT_Done_FreeType(ft);
+}
+
+
+void setOrthographicProjection(float* matrix, float left, float right, float bottom, float top) 
+{
+   
+    for (int i = 0; i < 16; i++) matrix[i] = 0.0f;
+    matrix[0] = 2.0f / (right - left);
+    matrix[5] = 2.0f / (top - bottom);
+    matrix[10] = -1.0f;
+    matrix[12] = -(right + left) / (right - left);
+    matrix[13] = -(top + bottom) / (top - bottom);
+    matrix[15] = 1.0f;
+}
+
+
+void renderText(const std::string& text, float x, float y, float scale, float r, float g, float b, int fbW, int fbH)
+{
+    if (textShaderProgram == 0) 
+    {
+        textShaderProgram = loadShader(textVertexShaderSrc, textFragmentShaderSrc);
+    }
+
+ 	
+    glUseProgram(textShaderProgram);
+    glUniform3f(glGetUniformLocation(textShaderProgram, "textColor"), r, g, b);
+    glActiveTexture(GL_TEXTURE0);
+
+ 
+    float projection[16];
+    setOrthographicProjection(projection, 0.0f, static_cast<float>(fbW), 0.0f, static_cast<float>(fbH));
+    glUniformMatrix4fv(glGetUniformLocation(textShaderProgram, "projection"), 1, GL_FALSE, projection);
+
+    
+    string::const_iterator c;
+    for (c = text.begin(); c != text.end(); c++) 
+    {
+        Character ch = Characters[*c];
+
+        float xpos = x + ch.BearingX * scale;
+        float ypos = y - (ch.SizeY - ch.BearingY) * scale;
+
+        float w = ch.SizeX * scale;
+        float h = ch.SizeY * scale;
+
+        float vertices[6][4] = {
+            { xpos,     ypos + h,   0.0f, 0.0f },
+            { xpos,     ypos,       0.0f, 1.0f },
+            { xpos + w, ypos,       1.0f, 1.0f },
+
+            { xpos,     ypos + h,   0.0f, 0.0f },
+            { xpos + w, ypos,       1.0f, 1.0f },
+            { xpos + w, ypos + h,   1.0f, 0.0f }
+        };
+        glBindTexture(GL_TEXTURE_2D, ch.TextureID);
+        unsigned int VBO;
+        glGenBuffers(1, &VBO);
+        glBindBuffer(GL_ARRAY_BUFFER, VBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_DYNAMIC_DRAW);
+        unsigned int VAO;
+        glGenVertexArrays(1, &VAO);
+        glBindVertexArray(VAO);
+        glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), 0);
+        glEnableVertexAttribArray(0);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glDeleteBuffers(1, &VBO);
+        glDeleteVertexArrays(1, &VAO);
+        x += (ch.Advance >> 6) * scale; 
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+inline float toNDCX(double xPix, int fbW) 
+{ 
+    return float(xPix / fbW * 2.0 - 1.0); 
+}
+inline float toNDCY(double yPix, int fbH) 
+{ 
+    return float(1.0 - yPix / fbH * 2.0); 
+}
+
+bool isInSocket(Component& c, Socket& s)
+{
+    return (c.x > s.x - s.width / 2 && c.x < s.x + s.width / 2 &&
+        c.y > s.y - s.height / 2 && c.y < s.y + s.height / 2);
+}
+void formatMMSS(int totalSeconds, char* out, size_t sz)
+{
+    if (totalSeconds < 0)
+        totalSeconds = 0;
+    int m = totalSeconds / 60, s = totalSeconds % 60;
+    snprintf(out, sz, "%02d:%02d", m, s);
+}
+
+class CenterBanner
+{
+  public:
+    char text[128];
+    float remain;
+    bool active;
+    float r, g, b, scale;
+};
+
+int main()
+{
+    enum Mode
+    {
+        MODE_TUTORIAL = 1,
+        MODE_EXAM = 2
+    };
+    Mode selectedMode = MODE_TUTORIAL;
+    bool modeChosen = false;
+
+    bool challengeActive = false;
+    float challengeTimeLeft = 0.0f;
+
+    CenterBanner banner = { "", 0, false, 0.35f, 0.85f, 1.0f, 1.0f };
+
+    if (!glfwInit())
+    {
+        cout << "Failed to init GLFW"<< endl;
+        return -1;
+    }
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+
+    const int MENU_W = 600, MENU_H = 360;
+    GLFWwindow* menu = glfwCreateWindow(MENU_W, MENU_H, "Select Mode", NULL, NULL);
+    if (!menu)
+    {
+        glfwTerminate();
+        return -1;
+    }
+    glfwMakeContextCurrent(menu);
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
+    {
+        glfwDestroyWindow(menu);
+        glfwTerminate();
+        return -1;
+    }
+
+    initFreeType("C:/Windows/Fonts/arial.ttf");
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    unsigned int red_menu = loadShader(redVertexShaderSrc, redFragmentShaderSrc);
+    unsigned int solid_menu = loadShader(solidVertexShaderSrc, solidFragmentShaderSrc);
+
+    auto toNDCX_m = [&](double x)
+        { 
+            return float(x / MENU_W * 2.0 - 1.0); 
+        };
+    auto toNDCY_m = [&](double y)
+        { 
+            return float(1.0 - y / MENU_H * 2.0);
+        };
+    auto inRect_m = [&](float px, float py, float cx, float cy, float w, float h)
+        {
+            return px >= cx - w / 2 && px <= cx + w / 2 && py >= cy - h / 2 && py <= cy + h / 2;
+        };
+
+    const float btnW = 0.7f, btnH = 0.25f;
+    const float tutorialX = 0.0f, tutorialY = 0.25f;
+    const float examX = 0.0f, examY = -0.25f;
+    bool mouseDownPrev = false;
+
+    while (!glfwWindowShouldClose(menu) && !modeChosen)
+    {
+        glViewport(0, 0, MENU_W, MENU_H);
+        glClearColor(0.08f, 0.08f, 0.09f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        drawSolidRect(0, 0, 1.8f, 1.2f, solid_menu, 0.12f, 0.12f, 0.14f, 1.0f);
+        drawSolidRect(tutorialX, tutorialY, btnW, btnH, solid_menu, 0.2f, 0.6f, 0.9f, 0.95f);
+        drawSolidRect(examX, examY, btnW, btnH, solid_menu, 0.9f, 0.6f, 0.2f, 0.95f);
+        drawRedRectangleOutline(tutorialX, tutorialY, btnW, btnH, red_menu);
+        drawRedRectangleOutline(examX, examY, btnW, btnH, red_menu);
+
+        renderText("Pick Your Training", MENU_W * 0.30f, MENU_H * 0.08f, 1.2f, 1, 1, 1, MENU_W, MENU_H);
+        renderText("Challenge Mode", MENU_W * 0.35f, MENU_H * 0.35f, 1.2f, 0, 0, 0, MENU_W, MENU_H);
+        renderText("Practice Mode", MENU_W * 0.35f, MENU_H * 0.58f, 1.2f, 0, 0, 0, MENU_W, MENU_H);
+        renderText("Name: MD.Rafiur Rahaman", 20, 340, 0.8f, 1.0f, 1.0f, 1.0f, MENU_W, MENU_H);
+        renderText("Roll: 240115", 20, 320, 0.8f, 1.0f, 1.0f, 1.0f, MENU_W, MENU_H);
+
+        glfwSwapBuffers(menu);
+        glfwPollEvents();
+        double mx, my;
+        glfwGetCursorPos(menu, &mx, &my);
+        float nx = toNDCX_m(mx), ny = toNDCY_m(my);
+        int left = glfwGetMouseButton(menu, GLFW_MOUSE_BUTTON_LEFT);
+
+        if (left == GLFW_PRESS && !mouseDownPrev)
+        {
+            if (inRect_m(nx, ny, tutorialX, tutorialY, btnW, btnH))
+            {
+                selectedMode = MODE_TUTORIAL;
+                modeChosen = true;
+            }
+            else if (inRect_m(nx, ny, examX, examY, btnW, btnH))
+            {
+                selectedMode = MODE_EXAM;
+                modeChosen = true;
+            }
+        }
+        mouseDownPrev = (left == GLFW_PRESS);
+    }
+    glfwDestroyWindow(menu);
+    if (!modeChosen)
+    {
+        glfwTerminate();
+        return 0;
+    }
+
+    GLFWwindow* win = glfwCreateWindow(WIN_WIDTH_REQUEST, WIN_HEIGHT_REQUEST, "Emulator", NULL, NULL);
+    if (!win)
+    {
+        glfwTerminate();
+        return -1;
+    }
+    glfwMakeContextCurrent(win);
+
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
+    {
+        glfwDestroyWindow(win);
+        glfwTerminate();
+        return -1;
+    }
+
+    if (FT_Init_FreeType(&ft)) 
+    {
+        cout << "Could not init FreeType Library" << endl;
+        exit(1);
+    }
+    if (FT_New_Face(ft, "C:/Windows/Fonts/arial.ttf", 0, &face))
+    {
+        cout << "Could not open font" << endl;
+        exit(1);
+    }
+    FT_Set_Pixel_Sizes(face, 0, 20);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+    Characters.clear();
+    for (unsigned char c = 0; c < 128; c++) 
+    {
+        if (FT_Load_Char(face, c, FT_LOAD_RENDER)) continue;
+
+        unsigned int texture;
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RED, face->glyph->bitmap.width, face->glyph->bitmap.rows, 0, GL_RED, GL_UNSIGNED_BYTE, face->glyph->bitmap.buffer);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        Character character = {
+            texture,
+            face->glyph->bitmap.width,
+            face->glyph->bitmap.rows,
+            face->glyph->bitmap_left,
+            face->glyph->bitmap_top,
+            static_cast<unsigned int>(face->glyph->advance.x)
+        };
+        Characters.insert(std::pair<char, Character>(c, character));
+    }
+    FT_Done_Face(face);
+    FT_Done_FreeType(ft);
+
+    textShaderProgram = 0;
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    unsigned int texProg = loadShader(vertexShaderSrc, fragmentShaderSrc);
+    unsigned int red = loadShader(redVertexShaderSrc, redFragmentShaderSrc);
+    unsigned int solid = loadShader(solidVertexShaderSrc, solidFragmentShaderSrc);
+
+    glUseProgram(texProg);
+    glUniform1i(glGetUniformLocation(texProg, "texture1"), 0);
+
+    TextureInfo mbTex = loadTextureWithSize("mb.png");
+    TextureInfo cpuTex = loadTextureWithSize("cpu.png");
+    TextureInfo gpuTex = loadTextureWithSize("gpu.png");
+    TextureInfo ramTex = loadTextureWithSize("ram.png");
+    TextureInfo ram2Tex = loadTextureWithSize("ram.png");
+    TextureInfo cpuFanTex = loadTextureWithSize("cpufan.png");
+    TextureInfo ssdTex = loadTextureWithSize("ssd.png");
+
+    Component motherboard(0, 0, 2, 2, mbTex.textureID, "Motherboard");
+
+    Socket cpuS = { 0.05f, 0.30f, 0.15f, 0.25f, "CPU", false };
+    Socket gpuS = { -0.11f, -0.52f, 0.30f, 0.10f, "GPU", false };
+    Socket ramS = { 0.21f, 0.32f, 0.01f, 0.70f, "RAM", false };
+    Socket ram2S = { 0.27f, 0.32f, 0.01f, 0.70f, "RAM", false };
+    Socket cpuFanS = { 0.035f, 0.30f, 0.20f, 0.50f, "CPUFAN", false };
+    Socket ssdS = { -0.02f, -0.07f, 0.25f, 0.08f, "SSD", false };
+
+    Component comps[MAX_COMPONENTS];
+    int n = 0;
+    comps[n++] = Component(-0.5f, 0.5f, 0.15f, 0.25f, cpuTex.textureID, "CPU");
+    comps[n++] = Component(0.5f, 0.5f, 0.4f, 0.2f, gpuTex.textureID, "GPU");
+    comps[n++] = Component(0.0f, 0.5f, 0.03f, 0.76f, ramTex.textureID, "RAM");
+    comps[n++] = Component(-0.7f, 0.5f, 0.03f, 0.76f, ram2Tex.textureID, "RAM2");
+    comps[n++] = Component(0.7f, 0.5f, 0.30f, 0.65f, cpuFanTex.textureID, "CPUFAN");
+    comps[n++] = Component(-0.7f, -0.5f, 0.45f, 0.35f, ssdTex.textureID, "SSD");
+
+    bool ssdConnected = false;
+
+    if (selectedMode == MODE_EXAM)
+    {
+        challengeActive = true;
+        challengeTimeLeft = (float)CHALLENGE_DURATION_SEC;
+    }
+    else
+    {
+        challengeActive = false;
+        challengeTimeLeft = 0;
+    }
+
+    int drag = -1;
+    float last = (float)glfwGetTime();
+    bool mousePrev = false;
+
+    auto showBanner = [&](const char* t, float rC, float gC, float bC, float dur, float scale)
+        {
+            strncpy(banner.text, t, sizeof(banner.text) - 1);
+            banner.text[sizeof(banner.text) - 1] = '\0';
+            banner.r = rC;
+            banner.g = gC;
+            banner.b = bC;
+            banner.remain = dur;
+            banner.scale = scale;
+            banner.active = true;
+        };
+
+    auto resetChallenge = [&]()
+        {
+            cpuS.occupied = false;
+            gpuS.occupied = false;
+            ramS.occupied = false;
+            ram2S.occupied = false;
+            cpuFanS.occupied = false;
+            ssdS.occupied = false;
+
+            for (int i = 0; i < n; i++)
+            {
+                comps[i].connected = false;
+                comps[i].dragging = false;
+                comps[i].visible = true; 
+            }
+
+            comps[0].x = -0.5f; comps[0].y = 0.5f;
+            comps[1].x = 0.5f; comps[1].y = 0.5f;
+            comps[2].x = 0.0f; comps[2].y = 0.5f;
+            comps[3].x = -0.7f; comps[3].y = 0.5f;
+            comps[4].x = 0.7f; comps[4].y = 0.5f;
+            comps[5].x = -0.7f; comps[5].y = -0.5f;
+
+            challengeTimeLeft = (float)CHALLENGE_DURATION_SEC;
+            challengeActive = true;
+            showBanner("Challenge restarted!", 1.0f, 1.0f, 1.0f, 2.0f, 1.0f);
+        };
+
+    while (!glfwWindowShouldClose(win))
+    {
+        int fbW, fbH;
+        glfwGetFramebufferSize(win, &fbW, &fbH);
+        if (fbW <= 0 || fbH <= 0)
+        {
+            glfwPollEvents();
+            continue;
+        }
+
+        float now = (float)glfwGetTime(), dt = now - last;
+        last = now;
+
+        if (selectedMode == MODE_EXAM && challengeActive)
+        {
+            challengeTimeLeft -= dt;
+            if (challengeTimeLeft <= 0)
+            {
+                challengeTimeLeft = 0;
+                challengeActive = false;
+                if (drag != -1)
+                {
+                    comps[drag].dragging = false;
+                    drag = -1;
+                }
+
+                int connected = 0;
+                for (int i = 0; i < n; i++)
+                    if (comps[i].connected)
+                        connected++;
+                char msg[128];
+                snprintf(msg, sizeof(msg), "TIME UP!   %d/%d CONNECTED   |   Press R to retry", connected, n);
+                showBanner(msg, 0.0f, 1.0f, 0.0f, 5.0f, 1.0f);
+            }
+        }
+
+        if (selectedMode == MODE_EXAM && !challengeActive)
+        {
+            if (glfwGetKey(win, GLFW_KEY_R) == GLFW_PRESS)
+            {
+                resetChallenge();
+            }
+        }
+
+        if (banner.active)
+        {
+            banner.remain -= dt;
+            if (banner.remain <= 0)
+                banner.active = false;
+        }
+
+        glViewport(0, 0, fbW, fbH);
+        glClearColor(0.10f, 0.10f, 0.10f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+
+        motherboard.draw(texProg);
+
+        if (selectedMode == MODE_TUTORIAL)
+        {
+            if (!cpuS.occupied)
+                drawRedRectangleOutline(cpuS.x, cpuS.y, cpuS.width, cpuS.height, red);
+            if (!gpuS.occupied)
+                drawRedRectangleOutline(gpuS.x, gpuS.y, gpuS.width, gpuS.height, red);
+            if (!ramS.occupied)
+                drawRedRectangleOutline(ramS.x, ramS.y, ramS.width, ramS.height, red);
+            if (!ram2S.occupied)
+                drawRedRectangleOutline(ram2S.x, ram2S.y, ram2S.width, ram2S.height, red);
+            if (!cpuFanS.occupied)
+                drawRedRectangleOutline(cpuFanS.x, cpuFanS.y, cpuFanS.width, cpuFanS.height, red);
+            if (!ssdS.occupied)
+                drawRedRectangleOutline(ssdS.x, ssdS.y, ssdS.width, ssdS.height, red);
+        }
+
+        for (int i = 0; i < n; i++)
+        {
+            if (comps[i].connected || strcmp(comps[i].name, "SSD") != 0 || !ssdConnected)
+            {
+                comps[i].draw(texProg);
+            }
+        }
+
+        renderText("PC Builder", 20, 40, 1.6f, 1.0f, 1.0f, 1.0f, fbW, fbH);
+        renderText("Name: MD.Rafiur Rahaman", 20, fbH - 30, 0.8f, 1.0f, 1.0f, 1.0f, fbW, fbH);
+        renderText("Roll: 240115", 20, fbH - 50, 0.8f, 1.0f, 1.0f, 1.0f, fbW, fbH);
+
+
+        if (selectedMode == MODE_EXAM)
+        {
+            char tbuf[32];
+            formatMMSS((int)challengeTimeLeft, tbuf, sizeof(tbuf));
+            renderText(tbuf, 20, 70, 1.2f, 1.0f, 1.0f, 1.0f, fbW, fbH);
+        }
+
+        if (banner.active)
+        {
+            int textWidth, textHeight;
+            int xPos = (fbW - strlen(banner.text) * 20) / 2;
+            int yPos = fbH / 2;
+            renderText(banner.text, xPos, yPos, banner.scale, banner.r, banner.g, banner.b, fbW, fbH);
+        }
+
+        glfwSwapBuffers(win);
+        glfwPollEvents();
+
+        double mx, my;
+        glfwGetCursorPos(win, &mx, &my);
+        float ndcX = toNDCX(mx, fbW), ndcY = toNDCY(my, fbH);
+        int left = glfwGetMouseButton(win, GLFW_MOUSE_BUTTON_LEFT);
+        bool canDrag = true;
+
+        if (canDrag && left == GLFW_PRESS && !mousePrev)
+        {
+            drag = -1;
+            for (int i = n - 1; i >= 0; i--)
+            {
+                if (!comps[i].connected && comps[i].isMouseOver(ndcX, ndcY))
+                {
+                    drag = i;
+                    comps[i].dragging = true;
+                    break;
+                }
+            }
+        }
+        else if (left == GLFW_RELEASE)
+        {
+            if (drag != -1)
+            {
+                Component& c = comps[drag];
+                Socket* s = nullptr;
+                const float CONNECTION_THRESHOLD = 0.15f;
+                float distToSocket = 0.0f;
+
+                if (!cpuS.occupied && strcmp(c.name, "CPU") == 0)
+                {
+                    distToSocket = sqrt(pow(c.x - cpuS.x, 2) + pow(c.y - cpuS.y, 2));
+                    if (distToSocket < CONNECTION_THRESHOLD) s = &cpuS;
+                }
+                else if (!gpuS.occupied && strcmp(c.name, "GPU") == 0)
+                {
+                    distToSocket = sqrt(pow(c.x - gpuS.x, 2) + pow(c.y - gpuS.y, 2));
+                    if (distToSocket < CONNECTION_THRESHOLD) s = &gpuS;
+                }
+                else if (!cpuFanS.occupied && strcmp(c.name, "CPUFAN") == 0)
+                {
+                    distToSocket = sqrt(pow(c.x - cpuFanS.x, 2) + pow(c.y - cpuFanS.y, 2));
+                    if (distToSocket < CONNECTION_THRESHOLD) s = &cpuFanS;
+                }
+                else if (!ssdS.occupied && strcmp(c.name, "SSD") == 0)
+                {
+                    distToSocket = sqrt(pow(c.x - ssdS.x, 2) + pow(c.y - ssdS.y, 2));
+                    if (distToSocket < CONNECTION_THRESHOLD)
+                    {
+                        s = &ssdS;
+                        c.x = s->x;
+                        c.y = s->y;
+                        c.connected = true;
+                        s->occupied = true;
+                        showBanner("SSD CONNECTED!", 0.35f, 0.85f, 1.0f, 3.0f, 1.0f);
+                        ssdConnected = true;  
+                    }
+                }
+                else if ((strcmp(c.name, "RAM") == 0 || strcmp(c.name, "RAM2") == 0))
+                {
+                    float dist1 = sqrt(pow(c.x - ramS.x, 2) + pow(c.y - ramS.y, 2));
+                    float dist2 = sqrt(pow(c.x - ram2S.x, 2) + pow(c.y - ram2S.y, 2));
+
+                    if (!ramS.occupied && dist1 < CONNECTION_THRESHOLD && (dist1 < dist2 || ram2S.occupied))
+                        s = &ramS;
+                    else if (!ram2S.occupied && dist2 < CONNECTION_THRESHOLD)
+                        s = &ram2S;
+                }
+
+                if (s)
+                {
+                    c.x = s->x;
+                    c.y = s->y;
+                    c.connected = true;
+                    s->occupied = true;
+                    if (strcmp(c.name, "SSD") == 0)
+                    {
+                        c.visible = false;
+                    }
+                    char big[64];
+                    snprintf(big, sizeof(big), "%s CONNECTED!", c.name);
+                    showBanner(big, 0.35f, 0.85f, 1.0f, 3.0f, 1.0f);
+
+                    if (selectedMode == MODE_EXAM && cpuS.occupied && gpuS.occupied &&
+                        ramS.occupied && ram2S.occupied && cpuFanS.occupied && ssdS.occupied)
+                    {
+                        challengeActive = false;
+                        showBanner("ALL COMPONENTS CONNECTED! Press R to try again", 0.0f, 1.0f, 0.0f, 5.0f, 1.0f);
+                    }
+                }
+                else if (selectedMode == MODE_EXAM)
+                {
+                    showBanner("WRONG SOCKET! Try again", 1.0f, 0.0f, 0.0f, 2.0f, 1.0f);
+                }
+                comps[drag].dragging = false;
+                drag = -1;
+            }
+        }
+        if (drag != -1)
+        {
+            comps[drag].x = ndcX;
+            comps[drag].y = ndcY;
+        }
+        mousePrev = (left == GLFW_PRESS);
+    }
+
+    glfwDestroyWindow(win);
+    glfwTerminate();
+    return 0;
+}
+
